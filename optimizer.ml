@@ -551,6 +551,62 @@ let constant_propagation_analysis
   in
   fix (in_map, out_map) true
 
+  let constant_folding
+  =fun pgm_env bbs pgm ->
+    let get_b_env 
+    =fun pc ->
+      let b = BasicBlocks.find_block pc bbs in
+      BlockMap.find b pgm_env in
+    
+    let const_fold_instr
+    =fun ((pc, (label, instr)), env) ->
+      let flag, new_instr = 
+        match instr with
+        | ASSIGNV (x, bop, y, z) ->
+          let y_val = BatMap.find_opt y env in
+          let z_val = BatMap.find_opt z env in
+          begin
+            match y_val, z_val with
+            | Some (Const a), Some (Const b) -> (true, COPYC (x, eval_binary a bop b))
+            | Some (Const a), _ -> (true, ASSIGNC (x, bop, z, a))
+            | _, Some (Const a) -> (true, ASSIGNC (x, bop, y, a))
+            | _ -> (false, instr)
+          end
+        | ASSIGNC (x, bop, y, n) ->
+          let y_val = BatMap.find_opt y env in
+          begin
+            match y_val with
+            | Some (Const a) -> (true, COPYC (x, eval_binary a bop n))
+            | _ -> (false, instr)
+          end
+        | ASSIGNU (x, uop, y) ->
+          let y_val = BatMap.find_opt y env in
+          begin
+            match y_val with
+            | Some (Const a) -> (true, COPYC (x, eval_unary uop a))
+            | _ -> (false, instr)
+          end
+        | COPY (x, y) ->
+          let y_val = BatMap.find_opt y env in
+          begin
+            match y_val with
+            | Some (Const a) -> (true, COPYC (x, a))
+            | _ -> (false, instr)
+          end
+        | _ -> (false, instr)
+      in
+      let env = cp_transfer_function env (pc, (label, instr)) in
+      ((flag, (label, new_instr)), env)
+    in
+    let blks = BasicBlocks.blocksof bbs in
+    let blk_leaders = List.fold_left(fun acc b -> (Block.get_leader b) :: acc) [] blks in
+    List.fold_left(fun ((acc, flag), env) def ->
+      let env = 
+      if List.mem def blk_leaders then get_b_env (fst def) else env in
+      let ((f, linstr), env) = const_fold_instr (def, env) in
+      ((acc @ [linstr], flag || f), env)
+      ) (([], false), BatMap.empty) pgm
+
 let rec optimize : program -> program
 =fun pgm -> 
   let construct_bb
