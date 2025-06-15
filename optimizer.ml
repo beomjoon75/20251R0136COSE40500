@@ -278,7 +278,61 @@ let basicblocks : (int * linstr) list -> BasicBlocks.t
           fix (new_in, new_out) is_updated
       in
       fix (in_map, out_map) true
-    
+
+      let liveness_analysis
+=fun bbs ->
+  let blks = BasicBlocks.blocksof bbs in
+  let blks = List.sort Block.compare blks in
+  let all_defs = List.concat_map Block.get_defs blks in
+
+  let def_set = List.fold_left(fun s d ->
+    match get_var d with
+    | None -> BatMap.add d BatSet.empty s
+    | Some x -> BatMap.add d (BatSet.singleton x) s
+  ) BatMap.empty all_defs in
+  let use_set = List.fold_left(fun s d ->
+    BatMap.add d (get_exp_var d) s
+  ) BatMap.empty all_defs in
+
+  let def_map, use_map = List.fold_left(fun (dm, um) b ->
+    let defs = Block.get_defs b in
+    let ds, us = List.fold_left(fun (ds, us) def -> 
+      let u_vars = BatSet.elements (BatMap.find def use_set) in
+      let us = List.fold_left(fun s x ->
+        if BatSet.mem x ds then s
+        else BatSet.union (BatSet.singleton x) s  
+      ) us u_vars in
+      let ds = BatSet.union (BatMap.find def def_set) ds in
+      ds, us
+    ) (BatSet.empty, BatSet.empty) defs in
+    BlockMap.add b ds dm, BlockMap.add b us um
+  ) (BlockMap.empty, BlockMap.empty) blks in
+
+  let in_map, out_map = List.fold_left(fun (i, o) b -> 
+    (BlockMap.add b BatSet.empty i, BlockMap.add b BatSet.empty o)
+  ) (BlockMap.empty, BlockMap.empty) blks in
+
+  let rec fix : var BatSet.t BlockMap.t * var BatSet.t BlockMap.t -> bool -> var BatSet.t BlockMap.t * var BatSet.t BlockMap.t
+  =fun (in_map, out_map) flag ->
+    if not flag then (in_map, out_map)
+    else
+      let (new_in, new_out) = List.fold_left(fun (im, om) b ->
+        let ui_set = BatSet.union (BlockMap.find b use_map) (BatSet.diff (BlockMap.find b om) (BlockMap.find b def_map)) in
+        let ui = BlockMap.add b ui_set im in
+        
+        let succs = BasicBlocks.succs b bbs in
+        let uo_set = List.fold_left(fun acc blk ->
+            BatSet.union acc (BlockMap.find blk im)
+        ) BatSet.empty (BlockSet.elements succs) in
+        let uo = BlockMap.add b uo_set om in
+
+        (ui, uo)
+      ) (in_map, out_map) blks in
+      let is_updated = new_in <> in_map || new_out <> out_map in
+      fix (new_in, new_out) is_updated
+  in
+  fix (in_map, out_map) true
+
 
 let rec optimize : program -> program
 =fun pgm -> 
