@@ -145,7 +145,55 @@ module BasicBlocks = struct
       List.hd entries 
 end
 
-
+let basicblocks : (int * linstr) list -> BasicBlocks.t
+=fun pgm ->
+  let label_pc_lst = List.fold_left(fun map (pc, (label, _)) -> BatMap.add label pc map) BatMap.empty pgm in
+  let entry_lst = List.fold_left(fun lst (pc, (_, instr)) ->
+    match instr with
+    | UJUMP l
+    | CJUMP (_, l)
+    | CJUMPF (_, l) -> lst @ [pc + 1; (BatMap.find l label_pc_lst)]
+    | HALT -> lst @ [pc + 1]
+    | _ -> lst
+  ) [0] pgm in
+  let leader_lst = List.sort_uniq compare entry_lst in
+  let b_lst = List.fold_left(fun acc def ->
+    let (curr_pc, _) = def in
+    if List.mem curr_pc leader_lst then 
+      Block.create def :: acc
+    else
+      let b = List.hd acc in
+      let acc = drop 1 acc in
+      let b = Block.add_def def b in
+      b :: acc
+  ) [] pgm in
+  let bbs = List.fold_left(fun acc b -> BasicBlocks.add_block b acc) BasicBlocks.empty b_lst in
+  let bbs = List.fold_left(fun acc b ->
+    let (pc, (_, instr)) = Block.get_last_def b in
+    match instr with
+    | UJUMP l ->
+      let dst = BatMap.find l label_pc_lst in
+      let dst = BasicBlocks.find_block dst bbs in
+      BasicBlocks.add_edge b dst acc
+    | CJUMP (_, l)
+    | CJUMPF (_, l) ->
+      let dst1 = BatMap.find l label_pc_lst in
+      let dst1 = BasicBlocks.find_block dst1 bbs in
+      let dst2 = pc + 1 in
+      let dst2 = BasicBlocks.find_block dst2 bbs in
+      acc
+      |> BasicBlocks.add_edge b dst1
+      |> BasicBlocks.add_edge b dst2
+    | HALT -> acc
+    | _ -> 
+      let dst = pc + 1 in
+      let dst = BasicBlocks.find_block dst bbs in
+      BasicBlocks.add_edge b dst acc
+  ) bbs (BasicBlocks.blocksof bbs) in
+  let entry_blk = Block.create(-2, (dummy_label, SKIP)) in
+  let bbs = BasicBlocks.add_block entry_blk bbs in
+  let blk = BasicBlocks.find_block 0 bbs in
+  BasicBlocks.add_edge entry_blk blk bbs
 
 let rec optimize : program -> program
 =fun pgm -> 
