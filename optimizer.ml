@@ -333,6 +333,104 @@ let basicblocks : (int * linstr) list -> BasicBlocks.t
   in
   fix (in_map, out_map) true
 
+  type expr = 
+  | BOPV of bop * var * var
+  | BOPC of bop * var * int
+  | UOP of uop * var
+  | LOADV of var * var
+
+let available_expression_analysis
+=fun bbs->
+  let gen_expr
+  =fun instr ->
+    match instr with
+      | ASSIGNV (_, bop, y, z) -> BatSet.singleton (BOPV(bop, y, z))
+      | ASSIGNC (_, bop, y, n) -> BatSet.singleton (BOPC(bop, y, n))
+      | ASSIGNU (_, uop, y) -> BatSet.singleton (UOP(uop, y))
+      | LOAD (_, (y, z)) -> BatSet.singleton (LOADV(y, z))
+      | _ -> BatSet.empty in
+  
+  let blks = BasicBlocks.blocksof bbs in
+  let blks = List.sort Block.compare blks in
+  let all_defs = List.concat_map Block.get_defs blks in
+  let all_exprs = List.fold_left(fun s (_, (_, instr)) ->
+    let e = gen_expr instr in
+    BatSet.union e s
+  ) BatSet.empty all_defs in
+
+  let kill_expr
+  =fun instr ->
+    match instr with
+    | ALLOC (x, _)
+    | ASSIGNV (x, _, _, _)
+    | ASSIGNC (x, _, _, _)
+    | ASSIGNU (x, _, _)
+    | COPY (x, _)
+    | COPYC (x, _)
+    | LOAD (x, _)
+    | READ x ->
+      List.fold_left(fun es expr ->
+        let flag = 
+          match expr with
+          | BOPV (_, y, z) -> y = x || z = x
+          | BOPC (_, y, _) 
+          | UOP (_, y) -> y = x
+          | LOADV (a, i) -> a = x || i = x
+        in
+        if flag then BatSet.add expr es
+        else es
+      ) BatSet.empty (BatSet.elements all_exprs)
+    | _ -> BatSet.empty
+  in
+
+  let kill_def = List.fold_left(fun m def ->
+    let (_, (_, instr)) = def in
+    let s = kill_expr instr in
+    BatMap.add def s m
+  ) BatMap.empty all_defs in
+  let gen_def = List.fold_left(fun m def ->
+    let (_, (_, instr)) = def in
+    let s = gen_expr instr in
+    let s = BatSet.diff s (BatMap.find def kill_def) in
+    BatMap.add def s m
+  ) BatMap.empty all_defs in
+
+  let kill_map = List.fold_left(fun m b ->
+    let s = List.fold_left(fun acc def -> BatSet.union acc (BatMap.find def kill_def)) BatSet.empty (Block.get_defs b) in
+    BlockMap.add b s m
+  ) BlockMap.empty blks in
+  let gen_map = List.fold_left(fun m b ->
+    let s = List.fold_left(fun acc def ->
+      BatSet.union (BatMap.find def gen_def) (BatSet.diff acc (BatMap.find def kill_def))
+    ) BatSet.empty (Block.get_defs b) in
+    BlockMap.add b s m
+  ) BlockMap.empty blks in
+
+  let in_map, out_map = List.fold_left(fun (i, o) b -> 
+    (BlockMap.add b all_exprs i, BlockMap.add b all_exprs o)
+  ) (BlockMap.empty, BlockMap.empty) blks in
+  let in_map = BlockMap.add (BasicBlocks.get_entry bbs) BatSet.empty in_map in
+
+  let rec fix : expr BatSet.t BlockMap.t * expr BatSet.t BlockMap.t -> bool -> expr BatSet.t BlockMap.t * expr BatSet.t BlockMap.t
+  =fun (in_map, out_map) flag ->
+    if not flag then (in_map, out_map)
+    else
+      let (new_in, new_out) = List.fold_left(fun (im, om) b ->
+        let preds = BasicBlocks.preds b bbs in
+        let ui_set = List.fold_left(fun acc blk ->
+          BatSet.intersect acc (BlockMap.find blk om)
+          ) all_exprs (BlockSet.elements preds) in
+        let ui = BlockMap.add b ui_set im in
+        
+        let uo_set = BatSet.union (BlockMap.find b gen_map) (BatSet.diff ui_set (BlockMap.find b kill_map)) in
+        let uo = BlockMap.add b uo_set om in
+        ui, uo        
+      ) (in_map, out_map) blks in
+      let is_updated = new_in <> in_map || new_out <> out_map in
+      fix (new_in, new_out) is_updated
+  in
+  fix (in_map, out_map) true
+
 
 let rec optimize : program -> program
 =fun pgm -> 
