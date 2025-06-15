@@ -763,6 +763,78 @@ let constant_propagation_analysis
                 ((state, acc @ [linstr]), flag || f)
                 ) (((init_in, expr_tmp), []), false) pgm
             
+
+                let deadcode_elimination
+                =fun pgm_lv  bbs pgm -> ignore pgm;
+                  let leaders = List.fold_left(fun acc blk -> (Block.get_leader blk) :: acc) [] (BasicBlocks.blocksof bbs) in
+                  
+                  let dce_instr
+                  =fun live def ->
+                    let (pc, (label, instr)) = def in
+                    ignore pc;
+                    (* let live = if List.mem def leaders then BlockMap.find (BasicBlocks.find_block pc bbs) pgm_lv
+                    else live in *)
+                    let use_var = 
+                      match instr with
+                      | ASSIGNV(_, _, y, z) -> [y; z]
+                      | STORE(_, y)        
+                      | ASSIGNC(_, _, y, _)
+                      | ASSIGNU(_, _, y)
+                      | COPY(_, y)
+                      | CJUMP(y, _)
+                      | CJUMPF(y, _)       
+                      | WRITE y            -> [y]
+                      | LOAD(_, (a, i)) -> [a; i]
+                      | _                  -> []
+                    in
+                    match instr with
+                    | ASSIGNV(x,_,_,_)
+                    | ASSIGNC(x,_,_,_)
+                    | ASSIGNU(x,_,_)
+                    | COPY(x,_)
+                    | COPYC(x,_)
+                    | LOAD(x, _)
+                    | READ x ->
+                      if BatSet.mem x live then
+                        let live = List.fold_left (fun s var -> BatSet.add var s) (BatSet.remove x live) use_var in
+                        (false, (live, Some(label, instr)))
+                      else (true, (live, None))
+                    | _ ->
+                      let live = List.fold_left (fun s var -> BatSet.add var s) live use_var in
+                      (false, (live, Some (label, instr)))
+                  in
+                
+                  let blks = BasicBlocks.blocksof bbs in
+                  let entry_blk = BasicBlocks.get_entry bbs in
+                  let last_defs = List.fold_left(fun acc b -> 
+                    (Block.get_last_def b) :: acc
+                    ) [] blks in
+                  let blks = List.filter(fun b -> b <> entry_blk) blks in
+                  let blks = List.sort Block.compare blks in
+                  let rev_instrs = List.map(fun b -> 
+                    let instrs = Block.get_defs b in
+                    List.rev instrs
+                    ) blks in
+                  let rev_instrs = List.flatten rev_instrs in
+                
+                
+                  let ((_, (acc, _)), flag) = List.fold_left(fun ((state, acc), flag) def ->
+                    let state = if List.mem def last_defs then BlockMap.find (BasicBlocks.find_block (fst def) bbs) pgm_lv
+                    else state in
+                    let (f, (state, linstr_opt)) = dce_instr state def in
+                    let (pgm_acc, block_acc) = acc in
+                    let block_acc = match linstr_opt with
+                    | Some linstr -> linstr :: block_acc
+                    | None -> block_acc in
+                    let (pgm_acc, block_acc) = 
+                      if List.mem def leaders then (pgm_acc @ block_acc, [])
+                      else (pgm_acc, block_acc) in
+                    ((state, (pgm_acc, block_acc)), flag || f)
+                    ) ((BatSet.empty, ([], [])), false) rev_instrs in
+                  ((BatSet.empty, acc), flag)
+                
+
+  
 let rec optimize : program -> program
 =fun pgm -> 
   let construct_bb
