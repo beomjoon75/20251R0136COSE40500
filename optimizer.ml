@@ -607,6 +607,83 @@ let constant_propagation_analysis
       ((acc @ [linstr], flag || f), env)
       ) (([], false), BatMap.empty) pgm
 
+      let copy_propagation
+      =fun pgm_in bbs pgm ->
+        let get_in_b
+        =fun pc -> 
+          let b = BasicBlocks.find_block pc bbs in
+          BlockMap.find b pgm_in in
+        
+        let propagate_use
+        =fun defs instr->
+          let replace_variable
+          =fun v ->
+            let reaching_def = List.filter(fun (_, (_, instr)) ->
+              match instr with
+              | COPY (x, _) -> 
+                if x = v then true
+                else false
+              | _ -> false
+              ) defs in
+            if List.length reaching_def = 1 then
+              let (_, (_, instr)) = List.hd reaching_def in
+              match instr with
+              | COPY (_, x) -> x
+              | _ -> v
+            else v
+          in
+          match instr with
+          | ASSIGNV (x, bop, y, z) ->
+            let new_y = replace_variable y in
+            let new_z = replace_variable z in
+            if y <> new_y || z <> new_z then Some (ASSIGNV(x, bop, new_y, new_z))
+            else None
+          | ASSIGNC (x, bop, y, n) ->
+            let new_y = replace_variable y in
+            if y <> new_y then Some (ASSIGNC(x, bop, new_y, n))
+            else None
+          | ASSIGNU (x, uop, y) ->
+            let new_y = replace_variable y in
+            if y <> new_y then Some (ASSIGNU(x, uop, new_y))
+            else None
+          | COPY (x, y) ->
+            let new_y = replace_variable y in
+            if y <> new_y then Some (COPY(x, new_y))
+            else None
+          | CJUMP (x, l) ->
+            let new_x = replace_variable x in
+            if x <> new_x then Some (CJUMP(new_x, l))
+            else None
+          | CJUMPF (x, l) ->
+            let new_x = replace_variable x in
+            if x <> new_x then Some (CJUMPF(new_x, l))
+            else None
+          | STORE ((a, i), x) ->
+            let new_a = replace_variable a in
+            let new_i = replace_variable i in
+            let new_x = replace_variable x in
+            if a <> new_a || i <> new_i || x <> new_x then Some (STORE((new_a, new_i), new_x))
+            else None
+          | WRITE x ->
+            let new_x = replace_variable x in
+            if x <> new_x then Some (WRITE new_x)
+            else None
+          | _ -> None
+        in
+        let propagate_instr
+        =fun (pc, (label, instr)) ->
+          let in_b = get_in_b pc in
+          let propagated_instr = propagate_use (BatSet.elements in_b) instr in
+          match propagated_instr with
+          | Some n_instr -> (true, (label, n_instr))
+          | None -> (false, (label, instr))
+        in
+        List.fold_left(fun (acc, flag) def ->
+          let (f, linstr) = propagate_instr def in
+          (acc @ [linstr], flag || f)
+          ) ([], false) pgm
+      
+  
 let rec optimize : program -> program
 =fun pgm -> 
   let construct_bb
