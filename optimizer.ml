@@ -683,7 +683,86 @@ let constant_propagation_analysis
           (acc @ [linstr], flag || f)
           ) ([], false) pgm
       
-  
+          let common_subexpression_elimination
+          =fun pgm_in bbs pgm ->
+            let entry = BasicBlocks.get_entry bbs in
+            let init_in = BlockMap.find entry pgm_in in
+            let expr_tmp = BatMap.empty in
+          
+            let kill_x
+            =fun x in_b expr_tmp ->
+              let in_b = BatSet.filter(fun expr ->
+                not (
+                  match expr with
+                  | BOPV (_, y, z) -> y = x || z = x
+                  | BOPC (_, y, _) 
+                  | UOP (_, y) -> y = x
+                  | LOADV (a, y) -> a = x || y = x
+                )
+              ) in_b in
+              let expr_tmp = BatMap.filter(fun expr _ ->
+                not (
+                  match expr with
+                  | BOPV (_, y, z) -> y = x || z = x
+                  | BOPC (_, y, _) 
+                  | UOP (_, y) -> y = x
+                  | LOADV (a, y) -> a = x || y = x
+                )
+              ) expr_tmp in
+              (in_b, expr_tmp)
+            in
+          
+            let cse_instr
+            =fun (in_b, expr_m) (_, (l, instr)) ->
+              match instr with
+              | ASSIGNV (x, bop, y, z) ->
+                let e = BOPV(bop, y, z) in
+                let (in_b, expr_m) = kill_x x in_b expr_m in
+                if BatSet.mem e in_b && BatMap.mem e expr_m then
+                  let p = BatMap.find e expr_m in
+                  (true, ((in_b, expr_m), (l, COPY (x, p))))
+                else
+                  let in_b = BatSet.add e in_b in
+                  let expr_m = BatMap.add e x expr_m in
+                  (false, ((in_b, expr_m), (l, instr)))
+              | ASSIGNC (x, bop, y, n) ->
+                let e = BOPC(bop, y, n) in
+                let (in_b, expr_m) = kill_x x in_b expr_m in
+                if BatSet.mem e in_b && BatMap.mem e expr_m then
+                  let p = BatMap.find e expr_m in
+                  (true, ((in_b, expr_m), (l, COPY (x, p))))
+                else
+                  let in_b = BatSet.add e in_b in
+                  let expr_m = BatMap.add e x expr_m in
+                  (false, ((in_b, expr_m), (l, instr)))
+              | ASSIGNU (x, uop, y) ->
+                let e = UOP(uop, y) in
+                let (in_b, expr_m) = kill_x x in_b expr_m in
+                if BatSet.mem e in_b && BatMap.mem e expr_m then
+                  let p = BatMap.find e expr_m in
+                  (true, ((in_b, expr_m), (l, COPY (x, p))))
+                else
+                  let in_b = BatSet.add e in_b in
+                  let expr_m = BatMap.add e x expr_m in
+                  (false, ((in_b, expr_m), (l, instr)))
+              | LOAD (x, (a, i)) ->
+                let e = LOADV(a, i) in
+                let (in_b, expr_m) = kill_x x in_b expr_m in
+                if BatSet.mem e in_b && BatMap.mem e expr_m then
+                  let p = BatMap.find e expr_m in
+                  (true, ((in_b, expr_m), (l, COPY (x, p))))
+                else
+                  let in_b = BatSet.add e in_b in
+                  let expr_m = BatMap.add e x expr_m in
+                  (false, ((in_b, expr_m), (l, instr)))
+              | _ -> (false, ((in_b, expr_m), (l, instr)))
+              in
+          
+              List.fold_left(fun ((state, acc), flag) def ->
+                let (f, (state, linstr)) = cse_instr state def in
+                ((state, acc @ [linstr]), flag || f)
+                ) (((init_in, expr_tmp), []), false) pgm
+            
 let rec optimize : program -> program
 =fun pgm -> 
   let construct_bb
