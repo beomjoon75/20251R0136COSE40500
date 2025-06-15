@@ -195,6 +195,31 @@ let basicblocks : (int * linstr) list -> BasicBlocks.t
   let blk = BasicBlocks.find_block 0 bbs in
   BasicBlocks.add_edge entry_blk blk bbs
 
+  let get_var : pc * linstr -> var option
+  =fun (_, (_, instr)) ->
+    match instr with
+    | ALLOC (x, _)
+    | ASSIGNV (x, _, _, _)
+    | ASSIGNC (x, _, _, _)
+    | ASSIGNU (x, _, _)
+    | COPY (x, _)
+    | COPYC (x, _)
+    | LOAD (x, _) 
+    | READ x -> Some x
+    | _ -> None
+  let get_exp_var : pc * linstr -> var BatSet.t
+  =fun (_, (_, instr)) ->
+    match instr with
+    | ASSIGNV (_, _, y, z) -> BatSet.add_seq (BatSeq.of_list [y; z]) BatSet.empty
+    | ASSIGNC (_, _, x, _)
+    | ASSIGNU (_, _, x)
+    | COPY (_, x)           (* x = y *)
+    | CJUMP (x, _)
+    | CJUMPF (x, _)
+    | STORE (_, x)
+    | WRITE x -> BatSet.singleton x
+    | _ -> BatSet.empty
+
 let rec optimize : program -> program
 =fun pgm -> 
   let construct_bb
