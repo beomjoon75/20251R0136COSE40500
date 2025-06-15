@@ -431,6 +431,125 @@ let available_expression_analysis
   in
   fix (in_map, out_map) true
 
+  type const_val = 
+  | Bot
+  | Const of int
+  | Top
+
+let const_join
+=fun a b-> 
+  match a, b with
+  | Bot, c
+  | c, Bot -> c
+  | Const n, Const m -> 
+    if n = m then Const n
+    else Top
+  | _ -> Top
+
+let eval_binary 
+=fun v1 op v2 ->
+  match v1,op,v2 with
+  | n1, ADD, n2 -> (n1+n2)
+  | n1, SUB, n2 -> (n1-n2)
+  | n1, MUL, n2 -> (n1*n2)
+  | n1, DIV, n2 -> (n1/n2)
+  | n1, LT, n2 -> if n1 < n2 then 1 else 0
+  | n1, LE, n2 -> if n1 <= n2 then 1 else 0
+  | n1, GT, n2 -> if n1 > n2 then 1 else 0
+  | n1, GE, n2 -> if n1 >= n2 then 1 else 0
+  | n1, EQ, n2 -> if n1 = n2 then 1 else 0
+  | n1, AND, n2 -> if n1 != 0 && n2 != 0 then 1 else 0
+  | n1, OR, n2 -> if n1 != 0 || n2 != 0 then 1 else 0
+    
+let eval_unary 
+=fun op v ->
+  match op, v with
+  | MINUS, n -> (-n)
+  | NOT, n -> if n = 0 then 1 else 0
+
+  let cp_transfer_function
+  =fun env (_, (_, instr)) ->
+    let lookup
+    =fun x -> try BatMap.find x env with _ -> Bot in
+    match instr with
+    | ASSIGNV (x, bop, y, z) ->
+      let y_val = lookup y in
+      let z_val = lookup z in
+      let x_val = 
+        match y_val, z_val with
+        | Const a, Const b -> Const (eval_binary a bop b)
+        | Const _, Top
+        | Top, Const _
+        | Top, Top -> Top
+        | Bot, _
+        | _, Bot -> Bot
+      in
+      BatMap.add x x_val env
+    | ASSIGNC (x, bop, y, n) ->
+      let y_val = lookup y in
+      let x_val = 
+        match y_val with
+        | Const a -> Const (eval_binary a bop n)
+        | Top -> Top
+        | Bot -> Bot
+      in
+      BatMap.add x x_val env
+    | ASSIGNU (x, uop, y) ->
+      let y_val = lookup y in
+      let x_val = 
+        match y_val with
+        | Const a -> Const (eval_unary uop a)
+        | Top -> Top
+        | Bot -> Bot
+      in
+      BatMap.add x x_val env
+    | COPY (x, y) -> BatMap.add x (lookup y) env
+    | COPYC (x, n) -> BatMap.add x (Const n) env
+
+    | ALLOC (x, _)
+    | LOAD (x, _)
+    | READ x -> BatMap.add x Top env
+
+    | _ -> env
+  
+
+let constant_propagation_analysis
+=fun bbs ->  
+
+  let blks = BasicBlocks.blocksof bbs in
+  let blks = List.sort Block.compare blks in
+  
+  let env = BatMap.empty in
+    let in_map, out_map = List.fold_left(fun (i, o) b -> 
+    (BlockMap.add b env i, BlockMap.add b env o)
+  ) (BlockMap.empty, BlockMap.empty) blks in
+
+  let rec fix
+  =fun (in_map, out_map) flag ->
+    if not flag then (in_map, out_map)
+    else 
+      let (new_in, new_out) = List.fold_left(fun (im, om) b ->
+        let preds = BasicBlocks.preds b bbs in
+        let ui_env = List.fold_left(fun acc blk ->
+          let b_env = BlockMap.find blk om in
+          BatMap.merge(fun _ v1 v2 ->
+            match v1, v2 with
+            | None, None -> None
+            | Some v, None
+            | None, Some v -> Some v
+            | Some v1, Some v2 -> Some (const_join v1 v2)
+          ) acc b_env
+        ) BatMap.empty (BlockSet.elements preds) in
+        let ui = BlockMap.add b ui_env im in
+
+        let uo_env = List.fold_left cp_transfer_function ui_env (Block.get_defs b) in
+        let uo = BlockMap.add b uo_env om in
+        ui, uo        
+      ) (in_map, out_map) blks in
+      let is_updated = new_in <> in_map || new_out <> out_map in
+      fix (new_in, new_out) is_updated
+  in
+  fix (in_map, out_map) true
 
 let rec optimize : program -> program
 =fun pgm -> 
