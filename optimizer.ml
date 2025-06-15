@@ -220,6 +220,66 @@ let basicblocks : (int * linstr) list -> BasicBlocks.t
     | WRITE x -> BatSet.singleton x
     | _ -> BatSet.empty
 
+    let reaching_definitions_analysis
+    =fun bbs ->
+      let blks = BasicBlocks.blocksof bbs in
+      let blks = List.sort Block.compare blks in
+      let all_defs = List.concat_map Block.get_defs blks in
+      let gen_def = List.fold_left(fun acc def -> BatMap.add def (BatSet.singleton def) acc) BatMap.empty all_defs in
+      let kill_def = List.fold_left(fun acc def ->
+        let opt_var = get_var def in
+        match opt_var with
+        | None -> BatMap.add def BatSet.empty acc
+        | Some x -> 
+          let kill_set = List.fold_left(fun kill_set d ->
+            if d <> def && get_var d = Some x then BatSet.add d kill_set 
+            else kill_set
+          ) BatSet.empty all_defs in
+          BatMap.add def kill_set acc
+      ) BatMap.empty all_defs in
+    
+      let gen_map = List.fold_left(fun gm b -> 
+        let defs = Block.get_defs b in
+        let rev_defs = List.rev defs in
+        let (gen_set, _) = List.fold_left(fun (gs, prevd) d ->
+          let rst = List.fold_left(fun acc k_d -> 
+            BatSet.diff acc (BatMap.find k_d kill_def)
+          ) (BatMap.find d gen_def) prevd in
+          (BatSet.union gs rst, d :: prevd)
+        ) (BatSet.empty, []) rev_defs in
+        BlockMap.add b gen_set gm
+      ) BlockMap.empty blks in
+    
+      let kill_map = List.fold_left(fun km b ->
+        let defs = Block.get_defs b in
+        let kill_set = List.fold_left(fun acc d -> BatSet.union acc (BatMap.find d kill_def)) BatSet.empty defs in
+        BlockMap.add b kill_set km
+      ) BlockMap.empty blks in
+    
+      let in_map, out_map = List.fold_left(fun (i, o) b -> 
+        (BlockMap.add b BatSet.empty i, BlockMap.add b BatSet.empty o)
+      ) (BlockMap.empty, BlockMap.empty) blks in
+    
+      let rec fix : (pc * linstr) BatSet.t BlockMap.t * (pc * linstr) BatSet.t BlockMap.t -> bool -> (pc * linstr) BatSet.t BlockMap.t * (pc * linstr) BatSet.t BlockMap.t
+      =fun (in_map, out_map) flag ->
+        if not flag then (in_map, out_map)
+        else
+          let (new_in, new_out) = List.fold_left(fun (im, om) b ->
+            let preds = BasicBlocks.preds b bbs in
+            let ui_set = List.fold_left(fun acc blk ->
+                BatSet.union acc (BlockMap.find blk om)
+            ) BatSet.empty (BlockSet.elements preds) in
+            let ui = BlockMap.add b ui_set im in
+            let uo_set = BatSet.union (BlockMap.find b gen_map) (BatSet.diff ui_set (BlockMap.find b kill_map)) in
+            let uo = BlockMap.add b uo_set om in
+            (ui, uo)
+          ) (in_map, out_map) blks in
+          let is_updated = new_in <> in_map || new_out <> out_map in
+          fix (new_in, new_out) is_updated
+      in
+      fix (in_map, out_map) true
+    
+
 let rec optimize : program -> program
 =fun pgm -> 
   let construct_bb
